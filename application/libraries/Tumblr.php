@@ -44,11 +44,17 @@ class Tumblr {
 	/* Set the useragnet. */
 	public $useragent = 'Tumblr for CodeIgniter';
 	
+	/* Connection */
+	public $connection = NULL;
+	
 	/* Immediately retry the API call if the response was not successful. */
 	public $retry = TRUE;
 	
 	/* Tumblr blog url */
 	public $tumblr_url = '';
+	
+	/* Authenticated ? */
+	public $authenticated = FALSE;
 	
 	/**
 	 * Let's get started...
@@ -72,7 +78,37 @@ class Tumblr {
 		}
 		
 		if(!isset($this->tumblr_url)) {
-			$this->tumblr_url = $this->config->ci->item('tumblr_url');
+			$this->tumblr_url = $this->ci->config->item('tumblr_url');
+		}
+		
+		if(!isset($this->callback_url)) {
+			$this->callback_url = $this->ci->config->item('callback_url');
+		}
+		
+		if(!isset($this->auth_callback)) {
+			$this->auth_callback = $this->ci->config->item('auth_callback');
+		}
+		
+		/*
+		 * Establish a connection
+		 */
+		if($this->ci->session->userdata('access_token') && $this->ci->session->userdata('access_token_secret'))
+		{
+			// If user already logged in
+			$this->authenticated = true;
+			$this->connection = $this->create($this->tumblr_consumer_key, $this->tumblr_secret_key, $this->ci->session->userdata('access_token'),  $this->ci->session->userdata('access_token_secret'));
+		}
+		elseif($this->ci->session->userdata('request_token') && $this->ci->session->userdata('request_token_secret'))
+		{
+			// If user in process of authentication
+			$this->authenticated = 'processing';
+			$this->connection = $this->create($this->tumblr_consumer_key, $this->tumblr_secret_key, $this->ci->session->userdata('request_token'), $this->ci->session->userdata('request_token_secret'));
+		}
+		else
+		{
+			// Unknown user
+			$this->authenticated = false;
+			$this->connection = $this->create($this->tumblr_consumer_key, $this->tumblr_secret_key);
 		}
 
 		log_message('debug', "Tumblr Class Initialized");
@@ -140,6 +176,7 @@ class Tumblr {
 		} else {
 			$this->token = NULL;
 		}
+		
 		return $this;
 	}
 
@@ -154,7 +191,10 @@ class Tumblr {
 		$parameters = array();
 		if (!empty($oauth_callback)) {
 			$parameters['oauth_callback'] = $oauth_callback;
+			$parameters['oauth_consumer_key'] = $this->tumblr_consumer_key;
+			$parameters['oauth_secret_key'] = $this->tumblr_secret_key;
 		}
+		
 		$request = $this->oauth_request($this->request_token_url(), 'POST', $parameters);
 		$token = OAuthUtil::parse_parameters($request);
 		$this->token = new OAuthConsumer($token['oauth_token'], $token['oauth_token_secret']);
@@ -261,8 +301,9 @@ class Tumblr {
 		if (strrpos($url, 'https://') !== 0 && strrpos($url, 'http://') !== 0) {
 			$url = "{$this->host}{$url}.{$this->format}";
 		}
-		$request = OAuthRequest::from_consumer_and_token($this->tumblr_consumer_key, $this->token, $method, $url, $parameters);
-		$request->sign_request($this->sha1_method, $this->tumblr_consumer_key, $this->token);
+		
+		$request = OAuthRequest::from_consumer_and_token($this->consumer, $this->token, $method, $url, $parameters);
+		$request->sign_request($this->sha1_method, $this->consumer, $this->token);
 		switch ($method) {
 		case 'GET':
 			return $this->http($request->to_url(), 'GET');
@@ -302,8 +343,10 @@ class Tumblr {
 				if (!empty($postfields)) {
 					$url = "{$url}?{$postfields}";
 				}
-			case 'GET':
-				$postfields = http_build_query($postfields);
+			case '_GET':
+				if(count($postfields)) {
+					$postfields = http_build_query($postfields);
+				}
 				curl_setopt($ci, CURLOPT_CUSTOMREQUEST, 'GET');
 				if (!empty($postfields)) {
 					$url = "{$url}?{$postfields}";
@@ -333,6 +376,79 @@ class Tumblr {
 		return strlen($header);
 	}
 	
+	function handle_auth()
+	{
+		if(!is_bool($this->authenticated)) {
+			$this->handle_callback();
+		}
+		if($this->ci->session->userdata('access_token') && $this->ci->session->userdata('access_token_secret'))
+		{
+			return;
+		}
+		else
+		{
+			// Making a request for request_token
+			$request_token = $this->get_request_token(base_url($this->callback_url));
+
+			$this->ci->session->set_userdata('request_token', $request_token['oauth_token']);
+			$this->ci->session->set_userdata('request_token_secret', $request_token['oauth_token_secret']);
+			
+			if($this->connection->http_code == 200)
+			{
+				$url = $this->connection->get_authorize_url($request_token);
+				redirect($url);
+			}
+			else
+			{
+				// An error occured. Make sure to put your error notification code here.
+				redirect(base_url());
+			}
+		}
+	}
+	
+	/**
+	 * Handle the api callback
+	 */
+	function handle_callback()
+	{
+		if($this->ci->input->get('oauth_token') && $this->ci->session->userdata('request_token') !== $this->ci->input->get('oauth_token'))
+		{
+			$this->reset_session();
+			redirect(base_url($this->auth_callback));
+		}
+		else
+		{
+			$access_token = $this->connection->get_access_token($this->ci->input->get('oauth_verifier'));
+		
+			if ($this->connection->http_code == 200)
+			{
+				$this->ci->session->set_userdata('access_token', $access_token['oauth_token']);
+				$this->ci->session->set_userdata('access_token_secret', $access_token['oauth_token_secret']);
+
+				$this->ci->session->unset_userdata('request_token');
+				$this->ci->session->unset_userdata('request_token_secret');
+				
+				redirect(base_url('/'));
+			}
+			else
+			{
+				// An error occured. Add your notification code here.
+				redirect(base_url('/'));
+			}
+		}
+	} 
+	
+	/**
+	 * Reset the current session data
+	 */
+	private function reset_session()
+	{
+		$this->ci->session->unset_userdata('access_token');
+		$this->ci->session->unset_userdata('access_token_secret');
+		$this->ci->session->unset_userdata('request_token');
+		$this->ci->session->unset_userdata('request_token_secret');
+	}
+	
 	/*******************************************************************
 	 * API Methods
 	 *******************************************************************/
@@ -343,6 +459,23 @@ class Tumblr {
 	 */
 	function blog_info()
 	{
-		return json_decode($this->http($this->host . 'blog/' . $this->tumblr_url . '/info', 'GET', array('api_key' => $this->tumblr_consumer_key)))->response->blog;
+		return json_decode($this->http($this->host . 'blog/' . $this->tumblr_url . '/info', '_GET', array('api_key' => $this->tumblr_consumer_key)))->response->blog;
+	}
+	
+	/**
+	 * Post
+	 * Creates a new blog post
+	 */
+	function blog_post($post_data = array())
+	{
+		if($this->ci->session->userdata('access_token') && $this->ci->session->userdata('access_token_secret'))
+		{
+			return $this->connection->post('blog/' . $this->tumblr_url . '/post', $post_data);
+		}
+		else
+		{
+			// User is not authenticated.
+			$this->handle_auth();
+		}
 	}
 }
