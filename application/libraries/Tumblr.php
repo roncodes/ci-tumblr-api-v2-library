@@ -461,6 +461,30 @@ class Tumblr {
 	{
 		return json_decode($this->http($this->host . 'blog/' . $this->tumblr_url . '/info', '_GET', array('api_key' => $this->tumblr_consumer_key)))->response->blog;
 	}
+
+	/**
+	* Get tagged posts
+	*/
+	function tagged($tag, $before = NULL)
+	{
+		return json_decode($this->http($this->host . 'tagged/', '_GET', array('api_key' => $this->tumblr_consumer_key, 'tag' => $tag, 'before' => $before)))->response;
+	}
+
+	/**
+	* Posts from a blog, with offset and amount to return, as well as reblog and notes flags
+	*/
+	function posts($blog_name, $offset = 0, $amount = 20, $reblog_info = FALSE, $notes = FALSE)
+	{
+		return json_decode($this->http($this->host . 'blog/' .  $blog_name . '/posts' , '_GET', array('api_key' => $this->tumblr_consumer_key, 'limit' => $amount, 'offset' => $offset, 'reblog_info' => $reblog_info, 'notes_info' => $notes)));
+	}
+
+	/** 
+	* Get posts of a specific type
+	*/
+	function posts_type($blog_name, $type, $offset = 0, $amount = 20, $reblog_info = FALSE, $notes = FALSE)
+	{
+		return json_decode($this->http($this->host . 'blog/' . $blog_name . '/posts/' . $type, '_GET', array('api_key' => $this->tumblr_consumer_key, 'limit' => $amount, 'offset' => $offset, 'reblog_info' => $reblog_info, 'notes_info' => $notes)))->response;
+	}
 	
 	/**
 	 * Post
